@@ -4,7 +4,7 @@ Sends a minimal request every 4 minutes to hold 1 worker warm.
 
 Cost: ~5 sec × ₹0.000189/sec × 360 pings/day = ₹10.5/month
 Run as a background process or system cron job:
-    * * * * * cd /path/to/QwenAISetup && python keepalive.py --once >> keepalive.log 2>&1
+    * * * * * cd /Users/shubhammohape/Documents/QwenAISetup && source .env && python keepalive.py --once >> /tmp/keepalive.log 2>&1
 
 Or run as a long-running daemon:
     python keepalive.py
@@ -26,7 +26,10 @@ ENDPOINT_ID = os.environ["RUNPOD_ENDPOINT_ID"]
 BASE_URL = f"https://api.runpod.ai/v2/{ENDPOINT_ID}"
 HEADERS = {"Authorization": f"Bearer {RUNPOD_API_KEY}", "Content-Type": "application/json"}
 
-# Minimal prompt — just enough to spin up the worker; result is discarded
+# 4 minutes keeps the worker warm without paying for a 24/7 worker
+INTERVAL_SECONDS = 4 * 60
+
+
 def _tiny_image_b64() -> str:
     img = Image.new("RGB", (64, 64), color=(128, 128, 128))
     buf = io.BytesIO()
@@ -34,17 +37,16 @@ def _tiny_image_b64() -> str:
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
-# Minimal payload: tiny grey image, 1 step — quality irrelevant, just warms the GPU
+# Built once at startup — reused for every ping
 PING_PAYLOAD = {
     "input": {
-        "image": _tiny_image_b64(),
         "prompt": "ping",
-        "steps": 1,
+        "image_base64": _tiny_image_b64(),
+        "seed": 42,
+        "width": 64,
+        "height": 64,
     }
 }
-
-# 4 minutes keeps the worker warm without paying for a 24/7 worker
-INTERVAL_SECONDS = 4 * 60
 
 
 def ping() -> bool:
