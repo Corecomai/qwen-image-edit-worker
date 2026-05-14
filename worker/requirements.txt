@@ -1,0 +1,8 @@
+runpod==1.7.3
+# QwenImageEditPlusPipeline is not in a stable diffusers release yet
+git+https://github.com/huggingface/diffusers
+transformers>=4.48.0
+accelerate>=0.27.0
+torch>=2.4.0
+Pillow>=10.0.0
+huggingface_hub>=0.23.0
