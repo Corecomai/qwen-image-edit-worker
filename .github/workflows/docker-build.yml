@@ -29,4 +29,6 @@ jobs:
         with:
           context: ./worker
           push: true
-          tags: ghcr.io/corecomai/qwen-image-edit-worker:latest
+          tags: |
+            ghcr.io/corecomai/qwen-image-edit-worker:latest
+            ghcr.io/corecomai/qwen-image-edit-worker:${{ github.sha }}
