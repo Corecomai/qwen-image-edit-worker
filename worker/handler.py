@@ -14,17 +14,22 @@ def load_model():
 
     model_id = os.environ.get("MODEL_ID", "Qwen/Qwen-Image-Edit-2511")
 
-    # Log GPU info before touching CUDA — helps diagnose MIG/NVML issues
     print(f"CUDA available: {torch.cuda.is_available()}", flush=True)
-    print(f"CUDA device:    {torch.cuda.get_device_name(0)}", flush=True)
-    print(f"CUDA capability:{torch.cuda.get_device_capability(0)}", flush=True)
+    if torch.cuda.is_available():
+        print(f"CUDA device:    {torch.cuda.get_device_name(0)}", flush=True)
+        print(f"CUDA capability:{torch.cuda.get_device_capability(0)}", flush=True)
+        print(f"VRAM total:     {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB", flush=True)
     print(f"PyTorch:        {torch.__version__}", flush=True)
 
     pipe = QwenImageEditPlusPipeline.from_pretrained(
         model_id,
         torch_dtype=torch.bfloat16,
         token=os.environ.get("HF_TOKEN"),
-    ).to("cuda")
+    )
+
+    # Use CPU offload — moves each component to GPU on demand.
+    # Works on 24GB and avoids the NVML assertion crash on MIG slices.
+    pipe.enable_model_cpu_offload()
 
     print(f"Model loaded: {model_id}", flush=True)
 
@@ -41,7 +46,6 @@ def handler(job):
         if not prompt:
             return {"error": "prompt is required"}
 
-        # Accept "image" (single b64) or "images" (list of b64)
         raw = job_input.get("images") or ([job_input["image"]] if "image" in job_input else None)
         if not raw:
             return {"error": "image or images is required"}
@@ -57,10 +61,9 @@ def handler(job):
         width = job_input.get("width")
         height = job_input.get("height")
 
-        generator = None
         if seed == -1:
             seed = torch.randint(0, 2**32 - 1, (1,)).item()
-        generator = torch.Generator("cuda").manual_seed(seed)
+        generator = torch.Generator("cpu").manual_seed(seed)
 
         kwargs = dict(
             image=image_arg,
@@ -96,7 +99,5 @@ def handler(job):
         return {"error": str(e)}
 
 
-# Pipeline loads once at worker startup — cold start pays this cost once.
 load_model()
-
 runpod.serverless.start({"handler": handler})
