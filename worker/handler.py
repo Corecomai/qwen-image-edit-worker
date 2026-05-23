@@ -27,9 +27,9 @@ def load_model():
         token=os.environ.get("HF_TOKEN"),
     )
 
-    # Use CPU offload — moves each component to GPU on demand.
-    # Works on 24GB and avoids the NVML assertion crash on MIG slices.
-    pipe.enable_model_cpu_offload()
+    # Sequential CPU offload moves weights layer-by-layer — much lower peak VRAM
+    # than enable_model_cpu_offload, allowing inference on 24GB GPUs.
+    pipe.enable_sequential_cpu_offload()
 
     print(f"Model loaded: {model_id}", flush=True)
 
