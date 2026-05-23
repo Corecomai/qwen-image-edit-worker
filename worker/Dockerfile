@@ -6,8 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Pre-create HF cache dir so downloads work even when network volume isn't mounted
-RUN mkdir -p /runpod-volume/hf-cache
+RUN mkdir -p /workspace/hf-cache
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
