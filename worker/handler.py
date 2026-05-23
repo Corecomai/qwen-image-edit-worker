@@ -8,6 +8,9 @@ from diffusers import QwenImageEditPlusPipeline
 
 pipe = None
 
+LIGHTNING_LORA = "lightx2v/Qwen-Image-Edit-2511-Lightning"
+LIGHTNING_WEIGHT = "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+
 
 def load_model():
     global pipe
@@ -25,9 +28,20 @@ def load_model():
         model_id,
         torch_dtype=torch.bfloat16,
         token=os.environ.get("HF_TOKEN"),
-    ).to("cuda")
+    )
 
-    print(f"Model loaded: {model_id}", flush=True)
+    # Load Lightning LoRA — reduces inference from 40 steps to 4 (~10x speedup)
+    pipe.load_lora_weights(
+        LIGHTNING_LORA,
+        weight_name=LIGHTNING_WEIGHT,
+        adapter_name="lightning",
+    )
+    pipe.set_adapters(["lightning"], adapter_weights=[1.0])
+
+    # CPU offload: moves components to GPU on demand, works across VRAM sizes
+    pipe.enable_model_cpu_offload()
+
+    print(f"Model loaded: {model_id} + Lightning LoRA (4-step)", flush=True)
 
 
 def _b64_to_pil(b64_str: str) -> Image.Image:
@@ -49,7 +63,8 @@ def handler(job):
         pil_images = [_b64_to_pil(img) for img in raw]
         image_arg = pil_images[0] if len(pil_images) == 1 else pil_images
 
-        steps = int(job_input.get("steps", 40))
+        # Default 4 steps for Lightning LoRA; caller can override up to 8 for quality
+        steps = int(job_input.get("steps", 4))
         cfg_scale = float(job_input.get("cfg_scale", 4.0))
         guidance_scale = float(job_input.get("guidance_scale", 1.0))
         negative_prompt = job_input.get("negative_prompt", " ")
