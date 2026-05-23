@@ -37,8 +37,11 @@ def load_model():
         adapter_name="lightning",
     )
     pipe.set_adapters(["lightning"], adapter_weights=[1.0])
+    # Fuse LoRA into base weights before CPU offload — prevents device mismatch
+    # when offload moves components between CPU and CUDA during inference
+    pipe.fuse_lora()
+    pipe.unload_lora_weights()
 
-    # CPU offload: moves components to GPU on demand, works across VRAM sizes
     pipe.enable_model_cpu_offload()
 
     print(f"Model loaded: {model_id} + Lightning LoRA (4-step)", flush=True)
