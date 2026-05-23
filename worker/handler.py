@@ -42,7 +42,16 @@ def load_model():
     pipe.fuse_lora()
     pipe.unload_lora_weights()
 
-    pipe.enable_model_cpu_offload()
+    vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9 if torch.cuda.is_available() else 0
+    if vram_gb >= 60:
+        pipe.to("cuda")
+        print(f"Offload: none (full GPU, {vram_gb:.0f}GB)", flush=True)
+    elif vram_gb >= 40:
+        pipe.enable_model_cpu_offload()
+        print(f"Offload: model (component-level, {vram_gb:.0f}GB)", flush=True)
+    else:
+        pipe.enable_sequential_cpu_offload()
+        print(f"Offload: sequential (layer-level, {vram_gb:.0f}GB — slower)", flush=True)
 
     print(f"Model loaded: {model_id} + Lightning LoRA (4-step)", flush=True)
 
