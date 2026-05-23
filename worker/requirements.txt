@@ -4,7 +4,9 @@ git+https://github.com/huggingface/diffusers@e39aecff57ed14d1018529c3de6ec3c34fa
 # 4.52+ has Qwen2_5_VLForConditionalGeneration; lower bound forces upgrade over base-image version
 transformers>=4.52.0,<5.0.0
 accelerate>=0.27.0
-# torch is already in the base image — do not reinstall, saves ~4 GB container space
+# Install torch with CUDA 12.4 wheels to match ADA_24 (RTX 4090) driver
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.6.0+cu124
 Pillow>=10.0.0
 huggingface_hub>=0.23.0
 hf_transfer>=0.1.4
