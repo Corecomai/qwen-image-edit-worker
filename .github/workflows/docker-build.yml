@@ -14,6 +14,9 @@ jobs:
       contents: read
       packages: write
 
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -25,6 +28,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: ./worker
@@ -32,3 +36,33 @@ jobs:
           tags: |
             ghcr.io/corecomai/qwen-image-edit-worker:latest
             ghcr.io/corecomai/qwen-image-edit-worker:${{ github.sha }}
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Update RunPod template to new image digest
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          IMAGE_DIGEST: ${{ needs.build.outputs.digest }}
+          TEMPLATE_ID: ccc2i0vhnn
+        run: |
+          IMAGE="ghcr.io/corecomai/qwen-image-edit-worker@${IMAGE_DIGEST}"
+          echo "Deploying image: $IMAGE"
+
+          RESPONSE=$(curl -s "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"query\": \"mutation { saveTemplate(input: { id: \\\"${TEMPLATE_ID}\\\", name: \\\"qwen-image-edit-worker__template__ehkrhs\\\", imageName: \\\"${IMAGE}\\\", containerDiskInGb: 40, volumeInGb: 0, dockerArgs: \\\"\\\", isServerless: true, env: [ { key: \\\"MODEL_ID\\\", value: \\\"Qwen/Qwen-Image-Edit-2511\\\" }, { key: \\\"HF_TOKEN\\\", value: \\\"{{ RUNPOD_SECRET_HF_TOKEN }}\\\" }, { key: \\\"RUNPOD_INIT_TIMEOUT\\\", value: \\\"900\\\" }, { key: \\\"PYTORCH_CUDA_ALLOC_CONF\\\", value: \\\"max_split_size_mb:512\\\" } ] }) { id name imageName } }\"
+            }")
+
+          echo "$RESPONSE"
+          echo "$RESPONSE" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          if 'errors' in d:
+              print('ERROR:', d['errors'])
+              exit(1)
+          print('Deployed:', d['data']['saveTemplate']['imageName'])
+          "

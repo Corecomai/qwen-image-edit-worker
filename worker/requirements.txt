@@ -1,7 +1,6 @@
 runpod==1.7.3
-# QwenImageEditPlusPipeline is not in a stable diffusers release yet
-git+https://github.com/huggingface/diffusers
-# 5.x added continuous_batching which breaks on PyTorch 2.4 base image
+# Pin to specific commit — avoids surprise breakage from diffusers main branch
+git+https://github.com/huggingface/diffusers@e39aecff57ed14d1018529c3de6ec3c34fadb559
 # 4.52+ has Qwen2_5_VLForConditionalGeneration; lower bound forces upgrade over base-image version
 transformers>=4.52.0,<5.0.0
 accelerate>=0.27.0
