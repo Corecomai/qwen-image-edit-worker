@@ -14,6 +14,12 @@ def load_model():
 
     model_id = os.environ.get("MODEL_ID", "Qwen/Qwen-Image-Edit-2511")
 
+    # Log GPU info before touching CUDA — helps diagnose MIG/NVML issues
+    print(f"CUDA available: {torch.cuda.is_available()}", flush=True)
+    print(f"CUDA device:    {torch.cuda.get_device_name(0)}", flush=True)
+    print(f"CUDA capability:{torch.cuda.get_device_capability(0)}", flush=True)
+    print(f"PyTorch:        {torch.__version__}", flush=True)
+
     pipe = QwenImageEditPlusPipeline.from_pretrained(
         model_id,
         torch_dtype=torch.bfloat16,
