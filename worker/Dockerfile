@@ -2,10 +2,12 @@ FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
 
 WORKDIR /app
 
-# Install system deps once in a single layer to keep image size down
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
+
+# Pre-create HF cache dir so downloads work even when network volume isn't mounted
+RUN mkdir -p /runpod-volume/hf-cache
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
