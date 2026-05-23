@@ -1,10 +1,8 @@
 runpod==1.7.3
-# Pin to specific commit — avoids surprise breakage from diffusers main branch
-git+https://github.com/huggingface/diffusers@e39aecff57ed14d1018529c3de6ec3c34fadb559
-# 4.52+ has Qwen2_5_VLForConditionalGeneration; lower bound forces upgrade over base-image version
+diffusers==0.38.0
 transformers>=4.52.0,<5.0.0
 accelerate>=0.27.0
-# torch is in the base image (pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime)
+# torch is pre-installed in pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime base image
 Pillow>=10.0.0
 huggingface_hub>=0.23.0
 hf_transfer>=0.1.4
