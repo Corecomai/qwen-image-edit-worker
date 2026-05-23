@@ -25,11 +25,7 @@ def load_model():
         model_id,
         torch_dtype=torch.bfloat16,
         token=os.environ.get("HF_TOKEN"),
-    )
-
-    # Sequential CPU offload moves weights layer-by-layer — much lower peak VRAM
-    # than enable_model_cpu_offload, allowing inference on 24GB GPUs.
-    pipe.enable_sequential_cpu_offload()
+    ).to("cuda")
 
     print(f"Model loaded: {model_id}", flush=True)
 
