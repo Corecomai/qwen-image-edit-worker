@@ -46,7 +46,7 @@ def load_model():
     if vram_gb >= 60:
         pipe.to("cuda")
         print(f"Offload: none (full GPU, {vram_gb:.0f}GB)", flush=True)
-    elif vram_gb >= 40:
+    elif vram_gb >= 20:
         pipe.enable_model_cpu_offload()
         print(f"Offload: model (component-level, {vram_gb:.0f}GB)", flush=True)
     else:
@@ -75,8 +75,8 @@ def handler(job):
         pil_images = [_b64_to_pil(img) for img in raw]
         image_arg = pil_images[0] if len(pil_images) == 1 else pil_images
 
-        # Default 4 steps for Lightning LoRA; caller can override up to 8 for quality
-        steps = int(job_input.get("steps", 4))
+        # 8 steps for Lightning LoRA on A100 80GB — better quality, still ~20s
+        steps = int(job_input.get("steps", 8))
         cfg_scale = float(job_input.get("cfg_scale", 4.0))
         guidance_scale = float(job_input.get("guidance_scale", 1.0))
         negative_prompt = job_input.get("negative_prompt", " ")
