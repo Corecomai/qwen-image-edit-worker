@@ -35,6 +35,12 @@ def load_model():
         token=os.environ.get("HF_TOKEN"),
     )
 
+    vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9 if torch.cuda.is_available() else 0
+    # FP8 model is ~12GB — full GPU on anything >=16GB (RTX 3090/4090)
+    # BF16 model is ~80GB — only full GPU on A100 80GB+
+    full_gpu_threshold = 16 if is_fp8 else 60
+    use_full_gpu = vram_gb >= full_gpu_threshold
+
     # Load Lightning LoRA — reduces inference from 40 steps to 4 (~10x speedup)
     pipe.load_lora_weights(
         LIGHTNING_LORA,
@@ -42,16 +48,14 @@ def load_model():
         adapter_name="lightning",
     )
     pipe.set_adapters(["lightning"], adapter_weights=[1.0])
-    # Fuse LoRA into base weights before CPU offload — prevents device mismatch
-    # when offload moves components between CPU and CUDA during inference
-    pipe.fuse_lora()
-    pipe.unload_lora_weights()
 
-    vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9 if torch.cuda.is_available() else 0
-    # FP8 model is ~12GB — full GPU on anything >=16GB (RTX 3090/4090)
-    # BF16 model is ~80GB — only full GPU on A100 80GB+
-    full_gpu_threshold = 16 if is_fp8 else 60
-    if vram_gb >= full_gpu_threshold:
+    if not is_fp8:
+        # Fuse LoRA before CPU offload to prevent device mismatch (BF16 model only).
+        # Quantized (FP8) models cannot fuse float LoRA deltas into integer weights.
+        pipe.fuse_lora()
+        pipe.unload_lora_weights()
+
+    if use_full_gpu:
         pipe.to("cuda")
         print(f"Offload: none (full GPU, {vram_gb:.0f}GB)", flush=True)
         # torch.compile speeds up repeated inference — ~20% faster after warmup
