@@ -16,9 +16,8 @@ LIGHTNING_WEIGHT = "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
 def load_model():
     global pipe
 
-    # FP8 pre-quantized model fits in ~12GB — runs full-GPU on RTX 3090/4090 (24GB)
-    # BF16 full model needs ~80GB — only fits on A100/H100 without offload
-    model_id = os.environ.get("MODEL_ID", "1038lab/Qwen-Image-Edit-2511-FP8")
+    # BF16 full model needs ~80GB — runs full-GPU on A100 SXM 80GB
+    model_id = os.environ.get("MODEL_ID", "Qwen/Qwen-Image-Edit-2511")
     is_fp8 = "fp8" in model_id.lower() or "FP8" in model_id
 
     print(f"CUDA available: {torch.cuda.is_available()}", flush=True)
