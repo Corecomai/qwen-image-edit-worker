@@ -60,12 +60,15 @@ def load_model():
         # torch.compile speeds up repeated inference — ~20% faster after warmup
         pipe.transformer = torch.compile(pipe.transformer, mode="default")
         print("torch.compile: enabled on transformer", flush=True)
-    elif vram_gb >= 20:
+    elif is_fp8:
+        # FP8 model components (~12GB total) fit individually on any 16GB+ GPU
         pipe.enable_model_cpu_offload()
         print(f"Offload: model (component-level, {vram_gb:.0f}GB)", flush=True)
     else:
+        # BF16 transformer alone is ~50GB — too large for model-level CPU offload
+        # on any GPU < 80GB. Sequential offload moves layer-by-layer instead.
         pipe.enable_sequential_cpu_offload()
-        print(f"Offload: sequential (layer-level, {vram_gb:.0f}GB — slower)", flush=True)
+        print(f"Offload: sequential (layer-level, {vram_gb:.0f}GB)", flush=True)
 
     print(f"Model loaded: {model_id} + Lightning LoRA (4-step)", flush=True)
 
