@@ -67,9 +67,6 @@ def load_model():
         pipe.fuse_lora()
         pipe.unload_lora_weights()
 
-    # Enable VAE slicing — reduces VRAM needed for decode step on large images
-    pipe.enable_vae_slicing()
-
     if use_full_gpu:
         pipe.to("cuda")
         print(f"Offload: none (full GPU, {vram_gb:.0f}GB)", flush=True)
