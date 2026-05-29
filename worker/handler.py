@@ -5,7 +5,7 @@ import io
 import torch
 import runpod
 from PIL import Image
-from diffusers import QwenImageEditPlusPipeline
+from diffusers import QwenImageEditPlusPipeline, FlowMatchEulerDiscreteScheduler
 
 pipe = None
 
@@ -34,6 +34,19 @@ def load_model():
         token=os.environ.get("HF_TOKEN"),
     )
 
+    # Lightning LoRA requires a specific scheduler with exponential time-shifting.
+    # Using the base model's default scheduler produces degraded quality at 4 steps.
+    pipe.scheduler = FlowMatchEulerDiscreteScheduler(
+        base_image_seq_len=256,
+        base_shift=math.log(3),
+        max_image_seq_len=8192,
+        num_train_timesteps=1000,
+        shift=1.0,
+        time_shift_type="exponential",
+        use_dynamic_shifting=True,
+    )
+    print("Scheduler: FlowMatchEulerDiscrete (exponential, Lightning)", flush=True)
+
     vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9 if torch.cuda.is_available() else 0
     # FP8 model is ~12GB — full GPU on anything >=16GB (RTX 3090/4090)
     # BF16 model is ~80GB — only full GPU on A100 80GB+
@@ -54,6 +67,9 @@ def load_model():
         pipe.fuse_lora()
         pipe.unload_lora_weights()
 
+    # Enable VAE slicing — reduces VRAM needed for decode step on large images
+    pipe.enable_vae_slicing()
+
     if use_full_gpu:
         pipe.to("cuda")
         print(f"Offload: none (full GPU, {vram_gb:.0f}GB)", flush=True)
@@ -73,21 +89,29 @@ def load_model():
     print(f"Model loaded: {model_id} + Lightning LoRA (4-step)", flush=True)
 
 
-# Lightning LoRA is trained for exactly 4 steps — using more steps degrades quality.
-# Steps here represent quality intent; handler clamps to 4 when LoRA is loaded.
+# Lightning LoRA is CFG-distilled: true_cfg_scale MUST be 1.0 (not 4.0).
+# Using true_cfg_scale > 1 with a distilled LoRA produces silhouettes/illustrations.
+# Quality differentiation comes from cfg_scale only as a no-op marker; true control
+# is via prompt quality. Steps fixed at 4 — the LoRA weight is 4-step only.
 _QUALITY_PRESETS = {
-    "fast":     {"steps": 4,  "cfg_scale": 3.5},
-    "balanced": {"steps": 4,  "cfg_scale": 4.0},
-    "high":     {"steps": 4,  "cfg_scale": 4.5},
-    "ultra":    {"steps": 4,  "cfg_scale": 5.0},
+    "fast":     {"steps": 4, "cfg_scale": 1.0},
+    "balanced": {"steps": 4, "cfg_scale": 1.0},
+    "high":     {"steps": 4, "cfg_scale": 1.0},
+    "ultra":    {"steps": 4, "cfg_scale": 1.0},
 }
 
+# Default "large" is portrait 832x1216 — 1024x1024 square causes quality degradation
+# in the base model (known issue: washed-out appearance, hallucinated backgrounds).
 _SIZE_PRESETS = {
     "small":  512,
-    "medium": 768,
-    "large":  1024,
-    "xl":     1280,
+    "medium": 704,
+    "large":  896,   # used in _resolve_dimensions as base_px for aspect ratio calc
+    "xl":     1152,
 }
+
+# Default output dimensions when no aspect_ratio/size/width/height is given
+_DEFAULT_WIDTH  = 832
+_DEFAULT_HEIGHT = 1216
 
 
 def _b64_to_pil(b64_str: str) -> Image.Image:
@@ -104,7 +128,10 @@ def _resolve_dimensions(
     if width and height:
         return int(width), int(height)
 
-    base_px = _SIZE_PRESETS.get(size or "large", 1024)
+    base_px = _SIZE_PRESETS.get(size or "large", 896)
+
+    if not aspect_ratio and not size:
+        return _DEFAULT_WIDTH, _DEFAULT_HEIGHT
 
     if aspect_ratio:
         try:
@@ -152,8 +179,8 @@ def handler(job):
 
         steps = int(job_input.get("steps", preset["steps"]))
         cfg_scale = float(job_input.get("cfg_scale", preset["cfg_scale"]))
-        guidance_scale = float(job_input.get("guidance_scale", 1.0))
-        negative_prompt = job_input.get("negative_prompt", " ")
+        guidance_scale = None  # ignored by pipeline — reserved for future distilled models
+        negative_prompt = job_input.get("negative_prompt", " ")  # single space, not empty
         seed = job_input.get("seed", -1)
         output_format = job_input.get("output_format", "png").lower()
         if output_format not in ("png", "jpeg"):
@@ -181,8 +208,7 @@ def handler(job):
         kwargs = dict(
             image=image_arg,
             prompt=prompt,
-            true_cfg_scale=cfg_scale,
-            guidance_scale=guidance_scale,
+            true_cfg_scale=cfg_scale,   # must be 1.0 for Lightning LoRA
             negative_prompt=negative_prompt,
             num_inference_steps=steps,
             generator=generator,
