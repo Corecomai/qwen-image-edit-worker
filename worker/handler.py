@@ -73,11 +73,13 @@ def load_model():
     print(f"Model loaded: {model_id} + Lightning LoRA (4-step)", flush=True)
 
 
+# Lightning LoRA is trained for exactly 4 steps — using more steps degrades quality.
+# Steps here represent quality intent; handler clamps to 4 when LoRA is loaded.
 _QUALITY_PRESETS = {
     "fast":     {"steps": 4,  "cfg_scale": 3.5},
-    "balanced": {"steps": 8,  "cfg_scale": 4.0},
-    "high":     {"steps": 16, "cfg_scale": 4.5},
-    "ultra":    {"steps": 20, "cfg_scale": 5.0},
+    "balanced": {"steps": 4,  "cfg_scale": 4.0},
+    "high":     {"steps": 4,  "cfg_scale": 4.5},
+    "ultra":    {"steps": 4,  "cfg_scale": 5.0},
 }
 
 _SIZE_PRESETS = {
@@ -122,6 +124,10 @@ def _resolve_dimensions(
 
 
 def handler(job):
+    import time
+    t_start = time.time()
+    job_id = job.get("id", "?")
+
     try:
         job_input = job.get("input", {})
 
@@ -135,6 +141,8 @@ def handler(job):
 
         pil_images = [_b64_to_pil(img) for img in raw]
         image_arg = pil_images[0] if len(pil_images) == 1 else pil_images
+        img_count = len(pil_images)
+        src_size = f"{pil_images[0].width}x{pil_images[0].height}"
 
         # Quality preset sets step/cfg defaults; explicit overrides win
         quality = job_input.get("quality", "balanced")
@@ -162,6 +170,14 @@ def handler(job):
             seed = torch.randint(0, 2**32 - 1, (1,)).item()
         generator = torch.Generator("cpu").manual_seed(seed)
 
+        vram_free = torch.cuda.mem_get_info()[0] / 1e9 if torch.cuda.is_available() else 0
+        print(
+            f"[{job_id}] START  prompt={prompt[:60]!r}  images={img_count}({src_size})"
+            f"  steps={steps}  cfg={cfg_scale}  out={width}x{height}  seed={seed}"
+            f"  vram_free={vram_free:.1f}GB",
+            flush=True,
+        )
+
         kwargs = dict(
             image=image_arg,
             prompt=prompt,
@@ -174,14 +190,24 @@ def handler(job):
             height=height,
         )
 
+        t_infer = time.time()
         with torch.inference_mode():
             result = pipe(**kwargs)
+        infer_s = time.time() - t_infer
 
         buf = io.BytesIO()
         save_fmt = "JPEG" if output_format == "jpeg" else "PNG"
         save_kwargs = {"quality": 92} if save_fmt == "JPEG" else {}
         result.images[0].save(buf, format=save_fmt, **save_kwargs)
         img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        img_kb = len(buf.getvalue()) / 1024
+
+        total_s = time.time() - t_start
+        print(
+            f"[{job_id}] DONE   infer={infer_s:.1f}s  total={total_s:.1f}s"
+            f"  output_size={img_kb:.0f}KB",
+            flush=True,
+        )
 
         return {
             "image": img_b64,
@@ -191,12 +217,16 @@ def handler(job):
             "height": height,
             "steps": steps,
             "quality": quality,
+            "infer_seconds": round(infer_s, 1),
         }
 
     except torch.cuda.OutOfMemoryError as e:
         torch.cuda.empty_cache()
+        vram_total = torch.cuda.get_device_properties(0).total_memory / 1e9
+        print(f"[{job_id}] OOM  vram_total={vram_total:.0f}GB  error={e}", flush=True)
         return {"error": f"OOM: {str(e)} — try smaller size or lower quality preset"}
     except ValueError as e:
+        print(f"[{job_id}] ValueError: {e}", flush=True)
         return {"error": str(e)}
     except Exception as e:
         return {"error": str(e)}
