@@ -1,44 +1,34 @@
 from __future__ import annotations
 
-import base64
+# ---------------------------------------------------------------------------
+# Storage env vars MUST be set before any HuggingFace library imports,
+# otherwise HF falls back to ~/.cache inside the container (small disk).
+# ---------------------------------------------------------------------------
 import fcntl
-import io
 import math
 import os
 import shutil
 import tempfile
-import time
 from pathlib import Path
-from threading import Lock
 
-import runpod
-import torch
-from diffusers import FlowMatchEulerDiscreteScheduler, QwenImageEditPlusPipeline
-from huggingface_hub import snapshot_download
-from PIL import Image
-
-# ---------------------------------------------------------------------------
-# Storage — model files live on a RunPod Network Volume so they survive across
-# cold starts. Falls back to /workspace/model-storage when no volume is mounted.
-# ---------------------------------------------------------------------------
-STORAGE_ROOT = Path(
+_STORAGE_ROOT = Path(
     os.getenv("RUNPOD_VOLUME_PATH", os.getenv("MODEL_STORAGE_PATH", "/workspace/model-storage"))
 )
-_HF_ROOT   = STORAGE_ROOT / "huggingface"
-_MODEL_ROOT = STORAGE_ROOT / "models"
-_LOCK_ROOT  = STORAGE_ROOT / "locks"
-_TMP_ROOT   = STORAGE_ROOT / "tmp"
+_HF_ROOT    = _STORAGE_ROOT / "huggingface"
+_MODEL_ROOT = _STORAGE_ROOT / "models"
+_LOCK_ROOT  = _STORAGE_ROOT / "locks"
+_TMP_ROOT   = _STORAGE_ROOT / "tmp"
 
 
 def _configure_storage() -> None:
-    for path, env_key in [
+    for path, key in [
         (_HF_ROOT,           "HF_HOME"),
         (_HF_ROOT / "hub",   "HF_HUB_CACHE"),
         (_HF_ROOT / "assets","HF_ASSETS_CACHE"),
         (_TMP_ROOT,          "TMPDIR"),
     ]:
         path.mkdir(parents=True, exist_ok=True)
-        os.environ.setdefault(env_key, str(path))
+        os.environ.setdefault(key, str(path))
     _MODEL_ROOT.mkdir(parents=True, exist_ok=True)
     _LOCK_ROOT.mkdir(parents=True, exist_ok=True)
     tempfile.tempdir = str(_TMP_ROOT)
@@ -47,16 +37,39 @@ def _configure_storage() -> None:
 _configure_storage()
 
 # ---------------------------------------------------------------------------
+# All other imports come AFTER storage is configured
+# ---------------------------------------------------------------------------
+import base64
+import gc
+import io
+import time
+from threading import Lock
+
+import runpod
+import torch
+from diffusers import FlowMatchEulerDiscreteScheduler, QwenImageEditPlusPipeline
+from diffusers.utils import load_image
+from huggingface_hub import snapshot_download
+from PIL import Image
+
+# ---------------------------------------------------------------------------
+# Global performance flags — set before any model work
+# ---------------------------------------------------------------------------
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.set_float32_matmul_precision("high")
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+STORAGE_ROOT     = _STORAGE_ROOT
 LIGHTNING_LORA   = "lightx2v/Qwen-Image-Edit-2511-Lightning"
 LIGHTNING_WEIGHT = "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
 
 pipe       = None
 _pipe_lock = Lock()
 
-# Lightning LoRA is CFG-distilled: true_cfg_scale MUST be 1.0 (not 4.0).
-# Using true_cfg_scale > 1 with a distilled LoRA produces silhouettes/illustrations.
+# Lightning LoRA is CFG-distilled: true_cfg_scale MUST be 1.0.
+# Using true_cfg_scale > 1.0 with a distilled LoRA produces silhouettes.
 _QUALITY_PRESETS = {
     "fast":     {"steps": 4, "cfg_scale": 1.0},
     "balanced": {"steps": 4, "cfg_scale": 1.0},
@@ -64,7 +77,7 @@ _QUALITY_PRESETS = {
     "ultra":    {"steps": 4, "cfg_scale": 1.0},
 }
 
-# Default portrait 832x1216 — 1024x1024 square has documented quality degradation.
+# Default portrait 832×1216 — 1024×1024 square has documented quality degradation.
 _SIZE_PRESETS = {
     "small":  512,
     "medium": 704,
@@ -76,7 +89,7 @@ _DEFAULT_HEIGHT = 1216
 
 
 # ---------------------------------------------------------------------------
-# Model download with volume caching + file lock (safe for concurrent workers)
+# Volume-cached model download (safe for concurrent workers via file lock)
 # ---------------------------------------------------------------------------
 
 def _model_cache_dir(model_id: str) -> Path:
@@ -84,7 +97,7 @@ def _model_cache_dir(model_id: str) -> Path:
 
 
 def _download_model(model_id: str) -> Path:
-    local_dir = _model_cache_dir(model_id)
+    local_dir  = _model_cache_dir(model_id)
     lock_path  = _LOCK_ROOT / f"{local_dir.name}.lock"
 
     with open(lock_path, "w") as lock_file:
@@ -110,13 +123,11 @@ def _download_model(model_id: str) -> Path:
             )
 
             if not model_index.exists():
-                raise RuntimeError(
-                    f"Download finished but model_index.json missing in {local_dir}"
-                )
+                raise RuntimeError(f"Download finished but model_index.json missing in {local_dir}")
 
             ready_marker.touch()
             free_gb = shutil.disk_usage(STORAGE_ROOT).free / 1e9
-            print(f"Model cached at {local_dir}  (disk free: {free_gb:.0f}GB)", flush=True)
+            print(f"Model cached: {local_dir}  (disk free: {free_gb:.0f}GB)", flush=True)
             return local_dir
 
         finally:
@@ -124,13 +135,12 @@ def _download_model(model_id: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Model loading
+# Model loading — thread-safe double-checked locking
 # ---------------------------------------------------------------------------
 
 def load_model() -> None:
     global pipe
 
-    # Fast path — no lock needed once loaded
     if pipe is not None:
         return
 
@@ -158,9 +168,10 @@ def load_model() -> None:
             torch_dtype=torch.bfloat16,
             local_files_only=True,
         )
+        p.set_progress_bar_config(disable=True)
 
         # Lightning LoRA requires exponential time-shifting scheduler.
-        # The base model's default linear scheduler produces degraded quality at 4 steps.
+        # Default linear scheduler degrades quality at 4 steps.
         p.scheduler = FlowMatchEulerDiscreteScheduler(
             base_image_seq_len=256,
             base_shift=math.log(3),
@@ -172,22 +183,21 @@ def load_model() -> None:
         )
         print("Scheduler: FlowMatchEulerDiscrete (exponential, Lightning)", flush=True)
 
-        vram_gb           = torch.cuda.get_device_properties(0).total_memory / 1e9 if torch.cuda.is_available() else 0
+        vram_gb            = torch.cuda.get_device_properties(0).total_memory / 1e9 if torch.cuda.is_available() else 0
         full_gpu_threshold = 16 if is_fp8 else 60
         use_full_gpu       = vram_gb >= full_gpu_threshold
 
-        # Load Lightning LoRA — reduces inference from ~40 steps to 4 (~10x speedup).
-        # HF hub caches the LoRA weights in HF_HOME on the volume after first download.
+        # Load Lightning LoRA — HF hub caches weights in HF_HOME on the volume.
         p.load_lora_weights(LIGHTNING_LORA, weight_name=LIGHTNING_WEIGHT, adapter_name="lightning")
         p.set_adapters(["lightning"], adapter_weights=[1.0])
 
         if not is_fp8:
-            # Fuse LoRA before CPU offload to prevent device mismatch (BF16 only).
+            # Fuse before CPU offload to prevent device mismatch.
             # FP8/quantized models cannot fuse float LoRA deltas into integer weights.
             p.fuse_lora()
             p.unload_lora_weights()
 
-        # VAE tiling reduces peak VRAM during the decode step on large images.
+        # VAE tiling reduces peak VRAM during decode on large images.
         if getattr(p, "vae", None) is not None:
             p.vae.enable_tiling()
             print("VAE tiling: enabled", flush=True)
@@ -195,7 +205,6 @@ def load_model() -> None:
         if use_full_gpu:
             p.to("cuda")
             print(f"Offload: none (full GPU, {vram_gb:.0f}GB)", flush=True)
-            # torch.compile speeds up repeated inference ~20% after warmup
             p.transformer = torch.compile(p.transformer, mode="default")
             print("torch.compile: enabled on transformer", flush=True)
         elif is_fp8:
@@ -203,7 +212,6 @@ def load_model() -> None:
             print(f"Offload: model (component-level, {vram_gb:.0f}GB)", flush=True)
         else:
             # BF16 transformer (~50GB) too large for component-level offload on <80GB GPU.
-            # Sequential offload moves layer-by-layer instead.
             p.enable_sequential_cpu_offload()
             print(f"Offload: sequential (layer-level, {vram_gb:.0f}GB)", flush=True)
 
@@ -212,11 +220,17 @@ def load_model() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Image helpers
 # ---------------------------------------------------------------------------
 
-def _b64_to_pil(b64_str: str) -> Image.Image:
-    return Image.open(io.BytesIO(base64.b64decode(b64_str))).convert("RGB")
+def _load_image_input(src: str) -> Image.Image:
+    """Accept base64 (with or without data-URL prefix) or http/https URL."""
+    if src.startswith("http://") or src.startswith("https://"):
+        return load_image(src).convert("RGB")
+    # Strip "data:image/...;base64," prefix if present
+    if "," in src and src.lstrip().lower().startswith("data:"):
+        src = src.split(",", 1)[1]
+    return Image.open(io.BytesIO(base64.b64decode(src))).convert("RGB")
 
 
 def _resolve_dimensions(
@@ -267,10 +281,11 @@ def handler(job: dict) -> dict:
         if not raw:
             return {"error": "image or images is required"}
 
-        pil_images = [_b64_to_pil(img) for img in raw]
-        image_arg  = pil_images[0] if len(pil_images) == 1 else pil_images
-        img_count  = len(pil_images)
-        src_size   = f"{pil_images[0].width}x{pil_images[0].height}"
+        pil_images = [_load_image_input(img) for img in raw]
+        # Always pass as list — more reliable with the pipeline internals
+        image_arg = pil_images if len(pil_images) > 1 else [pil_images[0]]
+        img_count = len(pil_images)
+        src_size  = f"{pil_images[0].width}x{pil_images[0].height}"
 
         quality = job_input.get("quality", "balanced")
         if quality not in _QUALITY_PRESETS:
@@ -279,7 +294,7 @@ def handler(job: dict) -> dict:
 
         steps           = int(job_input.get("steps", preset["steps"]))
         cfg_scale       = float(job_input.get("cfg_scale", preset["cfg_scale"]))
-        negative_prompt = job_input.get("negative_prompt", " ")  # single space, not empty
+        negative_prompt = job_input.get("negative_prompt", " ")  # single space avoids empty-string issues
         seed            = job_input.get("seed", -1)
         output_format   = job_input.get("output_format", "png").lower()
         if output_format not in ("png", "jpeg"):
@@ -303,6 +318,10 @@ def handler(job: dict) -> dict:
             f"  vram_free={vram_free:.1f}GB",
             flush=True,
         )
+
+        # Flush stale cached allocations before each job
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         t_infer = time.time()
         with torch.inference_mode():
@@ -332,18 +351,24 @@ def handler(job: dict) -> dict:
             flush=True,
         )
 
+        # Release any tensors from this job before the next
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return {
-            "image":          img_b64,
-            "format":         output_format,
-            "seed":           seed,
-            "width":          width,
-            "height":         height,
-            "steps":          steps,
-            "quality":        quality,
-            "infer_seconds":  round(infer_s, 1),
+            "image":         img_b64,
+            "format":        output_format,
+            "seed":          seed,
+            "width":         width,
+            "height":        height,
+            "steps":         steps,
+            "quality":       quality,
+            "infer_seconds": round(infer_s, 1),
         }
 
     except torch.cuda.OutOfMemoryError as e:
+        gc.collect()
         torch.cuda.empty_cache()
         vram_total = torch.cuda.get_device_properties(0).total_memory / 1e9
         print(f"[{job_id}] OOM  vram_total={vram_total:.0f}GB  error={e}", flush=True)
