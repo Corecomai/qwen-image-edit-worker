@@ -6,12 +6,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /workspace/hf-cache
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY handler.py .
 
-# HF_TOKEN and MODEL_ID are injected at RunPod endpoint config, not baked here
+# HF_TOKEN and MODEL_ID are injected via RunPod endpoint env, not baked here.
+# RUNPOD_VOLUME_PATH is set automatically by RunPod when a Network Volume is mounted.
 CMD ["python", "-u", "handler.py"]

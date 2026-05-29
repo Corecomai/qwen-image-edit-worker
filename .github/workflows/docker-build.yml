@@ -58,7 +58,7 @@ jobs:
           RESPONSE=$(curl -s "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
             -H "Content-Type: application/json" \
             -d "{
-              \"query\": \"mutation { saveTemplate(input: { id: \\\"${TEMPLATE_ID}\\\", name: \\\"qwen-image-edit-worker__template__ehkrhs\\\", imageName: \\\"${IMAGE}\\\", containerDiskInGb: 100, volumeInGb: 0, dockerArgs: \\\"\\\", isServerless: true, env: [ { key: \\\"MODEL_ID\\\", value: \\\"Qwen/Qwen-Image-Edit-2511\\\" }, { key: \\\"HF_TOKEN\\\", value: \\\"{{ RUNPOD_SECRET_HF_TOKEN }}\\\" }, { key: \\\"RUNPOD_INIT_TIMEOUT\\\", value: \\\"1200\\\" }, { key: \\\"PYTORCH_CUDA_ALLOC_CONF\\\", value: \\\"backend:cudaMallocAsync\\\" }, { key: \\\"HF_HOME\\\", value: \\\"/workspace/hf-cache\\\" }, { key: \\\"HF_HUB_ENABLE_HF_TRANSFER\\\", value: \\\"1\\\" }, { key: \\\"LIGHTNING_LORA\\\", value: \\\"lightx2v/Qwen-Image-Edit-2511-Lightning\\\" } ] }) { id name imageName } }\"
+              \"query\": \"mutation { saveTemplate(input: { id: \\\"${TEMPLATE_ID}\\\", name: \\\"qwen-image-edit-worker__template__ehkrhs\\\", imageName: \\\"${IMAGE}\\\", containerDiskInGb: 150, volumeInGb: 0, dockerArgs: \\\"\\\", isServerless: true, env: [ { key: \\\"MODEL_ID\\\", value: \\\"Qwen/Qwen-Image-Edit-2511\\\" }, { key: \\\"HF_TOKEN\\\", value: \\\"{{ RUNPOD_SECRET_HF_TOKEN }}\\\" }, { key: \\\"RUNPOD_INIT_TIMEOUT\\\", value: \\\"1800\\\" }, { key: \\\"HF_HUB_ENABLE_HF_TRANSFER\\\", value: \\\"1\\\" }, { key: \\\"HF_DOWNLOAD_MAX_WORKERS\\\", value: \\\"4\\\" }, { key: \\\"PYTORCH_CUDA_ALLOC_CONF\\\", value: \\\"expandable_segments:True\\\" } ] }) { id name imageName } }\"
             }")
 
           echo "$RESPONSE"
